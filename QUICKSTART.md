@@ -16,7 +16,16 @@ tar -xzf webapp-template.tar.gz
 cd webapp-template
 ```
 
-### 2. Run Setup Script
+### 2. Generate Lock Files (Important!)
+
+Before Docker builds, you need `package-lock.json` files:
+
+```bash
+cd backend && npm install && cd ..
+cd frontend && npm install && cd ..
+```
+
+### 3. Run Setup Script
 
 ```bash
 chmod +x setup.sh
@@ -29,7 +38,7 @@ The script will:
 - Set up environment variables
 - Install dependencies or build Docker images
 
-### 3. Start the Application
+### 4. Start the Application
 
 #### Option A: With Docker (Recommended)
 
@@ -47,15 +56,17 @@ cd backend && npm run dev
 cd frontend && npm start
 ```
 
-### 4. Access the Application
+### 5. Access the Application
 
-- **Frontend**: http://localhost:3000
-- **Backend API**: http://localhost:3001
-- **Health Check**: http://localhost:3001/health
+- **Main Application**: http://localhost/
+- **API**: http://localhost/api/messages
+- **Health Check**: http://localhost/health
+
+**All traffic goes through nginx on port 80!**
 
 ## Your First Chat Message
 
-1. Open http://localhost:3000
+1. Open http://localhost/
 2. Enter a username
 3. Click "Join Chat"
 4. Type a message and hit Send!

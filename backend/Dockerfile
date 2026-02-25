@@ -4,13 +4,13 @@
 FROM node:18-alpine AS dependencies
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install --omit=dev
 
 # Stage 2: Build (if needed for TypeScript or other build steps)
 FROM node:18-alpine AS build
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 COPY . .
 # RUN npm run build (if using TypeScript)
 

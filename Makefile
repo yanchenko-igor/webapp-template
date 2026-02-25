@@ -1,16 +1,17 @@
-.PHONY: help build up down logs clean test lint install
+.PHONY: help build up down logs clean test lint install debug-frontend
 
 # Default target
 help:
 	@echo "Available commands:"
-	@echo "  make build       - Build Docker images"
-	@echo "  make up          - Start all services"
-	@echo "  make down        - Stop all services"
-	@echo "  make logs        - Show logs"
-	@echo "  make clean       - Remove containers, volumes, and images"
-	@echo "  make test        - Run tests"
-	@echo "  make lint        - Run linters"
-	@echo "  make install     - Install dependencies"
+	@echo "  make build          - Build Docker images"
+	@echo "  make up             - Start all services"
+	@echo "  make down           - Stop all services"
+	@echo "  make logs           - Show logs"
+	@echo "  make clean          - Remove containers, volumes, and images"
+	@echo "  make test           - Run tests"
+	@echo "  make lint           - Run linters"
+	@echo "  make install        - Install dependencies"
+	@echo "  make debug-frontend - Debug frontend health check issues"
 
 # Build Docker images
 build:
@@ -76,3 +77,12 @@ dev-backend:
 
 dev-frontend:
 	cd frontend && npm start
+
+# Debug frontend health check
+debug-frontend:
+	./debug-frontend.sh
+
+# Rebuild frontend only
+rebuild-frontend:
+	docker-compose build --no-cache frontend
+	docker-compose up -d frontend

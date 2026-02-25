@@ -1,37 +1,16 @@
 version: '3.8'
 
-services:
-  # Nginx Reverse Proxy
-  nginx:
-    build:
-      context: ./nginx
-      dockerfile: Dockerfile
-    container_name: webapp-nginx
-    ports:
-      - "80:80"
-    depends_on:
-      backend:
-        condition: service_healthy
-      frontend:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - webapp-network
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-      start_period: 10s
+# Alternative docker-compose configuration with frontend on port 8080
+# Use this if you prefer to access the frontend on http://localhost:8080
 
+services:
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: webapp-backend
-    # Ports only exposed internally to Docker network
-    expose:
-      - "3001"
+    ports:
+      - "3001:3001"
     environment:
       - NODE_ENV=development
       - PORT=3001
@@ -53,14 +32,11 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: webapp-frontend
-    # Ports only exposed internally to Docker network
-    expose:
-      - "8080"
+    ports:
+      - "8080:8080"  # Frontend accessible on port 8080
     environment:
-      # Frontend is built at build time, so these are for runtime if needed
-      # The actual URLs are baked into the build
-      - REACT_APP_API_URL=/api
-      - REACT_APP_WS_URL=/ws
+      - REACT_APP_API_URL=http://localhost:3001
+      - REACT_APP_WS_URL=ws://localhost:3001
     depends_on:
       backend:
         condition: service_healthy
@@ -72,7 +48,7 @@ services:
       interval: 30s
       timeout: 3s
       retries: 3
-      start_period: 40s
+      start_period: 10s
 
 networks:
   webapp-network:

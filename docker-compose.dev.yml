@@ -1,0 +1,23 @@
+version: '3.8'
+
+# Development override - exposes backend and frontend ports directly
+# Use: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  backend:
+    ports:
+      - "3001:3001"  # Expose backend directly for debugging
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+
+  frontend:
+    ports:
+      - "3000:8080"  # Expose frontend directly for debugging
+    environment:
+      - REACT_APP_API_URL=http://localhost:3001
+      - REACT_APP_WS_URL=ws://localhost:3001
+
+  nginx:
+    ports:
+      - "8080:80"  # Nginx on port 8080 instead of 80
