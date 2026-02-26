@@ -68,13 +68,15 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Get all rooms
+// Get all rooms (only public rooms visible in list)
 app.get('/api/rooms', (req, res) => {
-  const roomList = Array.from(rooms.values()).map(serializeRoom);
+  const roomList = Array.from(rooms.values())
+    .filter(room => room.type === 'public') // Only show public rooms
+    .map(serializeRoom);
   res.json({ rooms: roomList });
 });
 
-// Get room details
+// Get room details by ID (for invite links)
 app.get('/api/rooms/:roomId', (req, res) => {
   const { roomId } = req.params;
   const room = rooms.get(roomId);
@@ -83,6 +85,7 @@ app.get('/api/rooms/:roomId', (req, res) => {
     return res.status(404).json({ error: 'Room not found' });
   }
   
+  // Return room info without password
   res.json({ room: serializeRoom(room) });
 });
 

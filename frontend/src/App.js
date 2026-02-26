@@ -19,6 +19,8 @@ function App() {
   const [showCreateRoom, setShowCreateRoom] = useState(false);
   const [showJoinRoom, setShowJoinRoom] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState(null);
+  const [showInviteLink, setShowInviteLink] = useState(false);
+  const [inviteLink, setInviteLink] = useState('');
   
   // Room creation form
   const [newRoomName, setNewRoomName] = useState('');
@@ -33,7 +35,20 @@ function App() {
   const typingTimeoutRef = useRef(null);
 
   useEffect(() => {
-    // Fetch rooms list
+    // Check if there's a room ID in the URL (invite link)
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomId = urlParams.get('room');
+    const password = urlParams.get('password');
+    
+    if (roomId) {
+      // Store invite room info for after username is set
+      sessionStorage.setItem('inviteRoom', roomId);
+      if (password) {
+        sessionStorage.setItem('invitePassword', password);
+      }
+    }
+    
+    // Fetch public rooms list
     fetch(`${API_URL}/rooms`)
       .then(res => res.json())
       .then(data => setRooms(data.rooms))
@@ -53,9 +68,24 @@ function App() {
       
       switch (data.type) {
         case 'init':
-          setRooms(data.data.rooms);
-          setCurrentRoom({ id: 'general', name: 'General' });
-          setMessages(data.data.messages);
+          setRooms(data.data.rooms.filter(r => r.type === 'public')); // Only show public rooms
+          
+          // Check if user was invited to a room
+          const inviteRoomId = sessionStorage.getItem('inviteRoom');
+          const invitePassword = sessionStorage.getItem('invitePassword');
+          
+          if (inviteRoomId) {
+            // Join the invited room
+            setTimeout(() => {
+              handleJoinRoom(inviteRoomId, invitePassword);
+              sessionStorage.removeItem('inviteRoom');
+              sessionStorage.removeItem('invitePassword');
+            }, 100);
+          } else {
+            // Join general room by default
+            setCurrentRoom({ id: 'general', name: 'General' });
+            setMessages(data.data.messages);
+          }
           break;
           
         case 'new_message':
@@ -67,20 +97,31 @@ function App() {
           setMessages(data.data.messages);
           setShowJoinRoom(false);
           setJoinPassword('');
+          
+          // If it's a private room, generate invite link
+          if (data.data.room.type === 'private') {
+            generateInviteLink(data.data.room.id);
+          }
           break;
           
         case 'room_created':
-          setRooms(prev => [...prev, data.data]);
+          // Only add to list if it's a public room
+          if (data.data.type === 'public') {
+            setRooms(prev => [...prev, data.data]);
+          }
           break;
           
         case 'rooms_updated':
-          setRooms(data.data.rooms);
+          setRooms(data.data.rooms.filter(r => r.type === 'public')); // Only show public rooms
           break;
           
         case 'room_update':
-          setRooms(prev => prev.map(r => 
-            r.id === data.data.id ? data.data : r
-          ));
+          // Only update if it's a public room
+          if (data.data.type === 'public') {
+            setRooms(prev => prev.map(r => 
+              r.id === data.data.id ? data.data : r
+            ));
+          }
           if (currentRoom && currentRoom.id === data.data.id) {
             setCurrentRoom(data.data);
           }
@@ -154,11 +195,12 @@ function App() {
         const { room } = await response.json();
         setShowCreateRoom(false);
         setNewRoomName('');
+        const roomPassword = newRoomPassword;
         setNewRoomPassword('');
         setNewRoomType('public');
         
         // Join the newly created room
-        handleJoinRoom(room.id, newRoomType === 'private' ? newRoomPassword : null);
+        handleJoinRoom(room.id, newRoomType === 'private' ? roomPassword : null);
       }
     } catch (err) {
       console.error('Failed to create room:', err);
@@ -166,7 +208,37 @@ function App() {
     }
   };
 
+  const generateInviteLink = (roomId) => {
+    // Get current room to check if it has a password
+    const room = rooms.find(r => r.id === roomId) || currentRoom;
+    const baseUrl = window.location.origin + window.location.pathname;
+    
+    // For private rooms, we need to include the password in the link
+    // In production, you might want to use a token-based system instead
+    const password = sessionStorage.getItem('lastRoomPassword');
+    
+    let link = `${baseUrl}?room=${roomId}`;
+    if (password) {
+      link += `&password=${encodeURIComponent(password)}`;
+    }
+    
+    setInviteLink(link);
+    setShowInviteLink(true);
+  };
+
+  const copyInviteLink = () => {
+    navigator.clipboard.writeText(inviteLink).then(() => {
+      alert('Invite link copied to clipboard!');
+    }).catch(err => {
+      console.error('Failed to copy:', err);
+    });
+  };
+
   const handleJoinRoom = (roomId, password = null) => {
+    if (password) {
+      sessionStorage.setItem('lastRoomPassword', password);
+    }
+    
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: 'join_room',
@@ -276,11 +348,20 @@ function App() {
           <span className="room-name">
             {currentRoom ? (
               <>
-                {currentRoom.hasPassword && '🔒'} {currentRoom.name}
+                {currentRoom.type === 'private' && '🔒'} {currentRoom.name}
                 {currentRoom.userCount > 0 && ` (${currentRoom.userCount} online)`}
               </>
             ) : 'No room selected'}
           </span>
+          {currentRoom && currentRoom.type === 'private' && (
+            <button 
+              className="invite-btn"
+              onClick={() => generateInviteLink(currentRoom.id)}
+              title="Get invite link"
+            >
+              📋 Invite Link
+            </button>
+          )}
         </div>
       </header>
 
@@ -440,6 +521,40 @@ function App() {
                 <button type="submit">Join</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Invite Link Modal */}
+      {showInviteLink && (
+        <div className="modal-overlay" onClick={() => setShowInviteLink(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>📋 Invite Link</h2>
+            <p>Share this link to invite others to this room:</p>
+            <div className="invite-link-container">
+              <input
+                type="text"
+                value={inviteLink}
+                readOnly
+                className="invite-link-input"
+                onClick={(e) => e.target.select()}
+              />
+              <button 
+                type="button"
+                className="copy-btn"
+                onClick={copyInviteLink}
+              >
+                Copy
+              </button>
+            </div>
+            <p className="invite-note">
+              ⚠️ This link contains the room password. Anyone with this link can join.
+            </p>
+            <div className="modal-actions">
+              <button type="button" onClick={() => setShowInviteLink(false)}>
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
