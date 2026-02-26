@@ -41,11 +41,20 @@ function App() {
     const password = urlParams.get('password');
     
     if (roomId) {
-      // Store invite room info for after username is set
-      sessionStorage.setItem('inviteRoom', roomId);
-      if (password) {
-        sessionStorage.setItem('invitePassword', password);
-      }
+      // Fetch room details to check if it's private
+      fetch(`${API_URL}/rooms/${roomId}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.room) {
+            // Store invite room info for after username is set
+            sessionStorage.setItem('inviteRoom', roomId);
+            sessionStorage.setItem('inviteRoomData', JSON.stringify(data.room));
+            if (password) {
+              sessionStorage.setItem('invitePassword', password);
+            }
+          }
+        })
+        .catch(err => console.error('Failed to fetch room:', err));
     }
     
     // Fetch public rooms list
@@ -73,14 +82,26 @@ function App() {
           // Check if user was invited to a room
           const inviteRoomId = sessionStorage.getItem('inviteRoom');
           const invitePassword = sessionStorage.getItem('invitePassword');
+          const inviteRoomDataStr = sessionStorage.getItem('inviteRoomData');
           
           if (inviteRoomId) {
-            // Join the invited room
-            setTimeout(() => {
-              handleJoinRoom(inviteRoomId, invitePassword);
+            const inviteRoomData = inviteRoomDataStr ? JSON.parse(inviteRoomDataStr) : null;
+            
+            // If it's a private room without a password, show password prompt
+            if (inviteRoomData && inviteRoomData.hasPassword && !invitePassword) {
+              setSelectedRoom(inviteRoomData);
+              setShowJoinRoom(true);
               sessionStorage.removeItem('inviteRoom');
-              sessionStorage.removeItem('invitePassword');
-            }, 100);
+              sessionStorage.removeItem('inviteRoomData');
+            } else {
+              // Join the invited room
+              setTimeout(() => {
+                handleJoinRoom(inviteRoomId, invitePassword);
+                sessionStorage.removeItem('inviteRoom');
+                sessionStorage.removeItem('invitePassword');
+                sessionStorage.removeItem('inviteRoomData');
+              }, 100);
+            }
           } else {
             // Join general room by default
             setCurrentRoom({ id: 'general', name: 'General' });
@@ -208,18 +229,20 @@ function App() {
     }
   };
 
-  const generateInviteLink = (roomId) => {
+  const generateInviteLink = (roomId, includePassword = true) => {
     // Get current room to check if it has a password
     const room = rooms.find(r => r.id === roomId) || currentRoom;
     const baseUrl = window.location.origin + window.location.pathname;
     
-    // For private rooms, we need to include the password in the link
-    // In production, you might want to use a token-based system instead
-    const password = sessionStorage.getItem('lastRoomPassword');
-    
     let link = `${baseUrl}?room=${roomId}`;
-    if (password) {
-      link += `&password=${encodeURIComponent(password)}`;
+    
+    if (includePassword) {
+      // For private rooms, we need to include the password in the link
+      // In production, you might want to use a token-based system instead
+      const password = sessionStorage.getItem('lastRoomPassword');
+      if (password) {
+        link += `&password=${encodeURIComponent(password)}`;
+      }
     }
     
     setInviteLink(link);
@@ -528,28 +551,65 @@ function App() {
       {/* Invite Link Modal */}
       {showInviteLink && (
         <div className="modal-overlay" onClick={() => setShowInviteLink(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal invite-modal" onClick={(e) => e.stopPropagation()}>
             <h2>📋 Invite Link</h2>
             <p>Share this link to invite others to this room:</p>
-            <div className="invite-link-container">
-              <input
-                type="text"
-                value={inviteLink}
-                readOnly
-                className="invite-link-input"
-                onClick={(e) => e.target.select()}
-              />
-              <button 
-                type="button"
-                className="copy-btn"
-                onClick={copyInviteLink}
-              >
-                Copy
-              </button>
+            
+            <div className="invite-options">
+              <div className="invite-option">
+                <h3>🔓 Link with Password (Recommended)</h3>
+                <p className="option-description">Recipients can join directly without entering password</p>
+                <div className="invite-link-container">
+                  <input
+                    type="text"
+                    value={inviteLink}
+                    readOnly
+                    className="invite-link-input"
+                    onClick={(e) => e.target.select()}
+                  />
+                  <button 
+                    type="button"
+                    className="copy-btn"
+                    onClick={copyInviteLink}
+                  >
+                    Copy
+                  </button>
+                </div>
+                <p className="invite-note warning">
+                  ⚠️ This link contains the room password. Anyone with this link can join immediately.
+                </p>
+              </div>
+              
+              <div className="invite-option">
+                <h3>🔒 Link without Password (More Secure)</h3>
+                <p className="option-description">Recipients will need to enter the password manually</p>
+                <div className="invite-link-container">
+                  <input
+                    type="text"
+                    value={inviteLink.split('&password=')[0]}
+                    readOnly
+                    className="invite-link-input"
+                    onClick={(e) => e.target.select()}
+                  />
+                  <button 
+                    type="button"
+                    className="copy-btn"
+                    onClick={() => {
+                      const linkWithoutPassword = inviteLink.split('&password=')[0];
+                      navigator.clipboard.writeText(linkWithoutPassword).then(() => {
+                        alert('Secure invite link copied! Recipients will need the password.');
+                      });
+                    }}
+                  >
+                    Copy
+                  </button>
+                </div>
+                <p className="invite-note info">
+                  ℹ️ Share the password separately for better security.
+                </p>
+              </div>
             </div>
-            <p className="invite-note">
-              ⚠️ This link contains the room password. Anyone with this link can join.
-            </p>
+            
             <div className="modal-actions">
               <button type="button" onClick={() => setShowInviteLink(false)}>
                 Close
