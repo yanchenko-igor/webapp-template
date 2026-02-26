@@ -14,22 +14,189 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-// In-memory storage for messages
-const messages = [];
+// In-memory storage
+const rooms = new Map();
 const connectedClients = new Map();
+
+// Initialize default "general" room
+rooms.set('general', {
+  id: 'general',
+  name: 'General',
+  type: 'public',
+  password: null,
+  messages: [],
+  users: new Set(),
+  createdAt: new Date().toISOString()
+});
+
+// Helper function to get or create room
+function getOrCreateRoom(roomId, roomData = {}) {
+  if (!rooms.has(roomId)) {
+    rooms.set(roomId, {
+      id: roomId,
+      name: roomData.name || roomId,
+      type: roomData.type || 'public',
+      password: roomData.password || null,
+      messages: [],
+      users: new Set(),
+      createdAt: new Date().toISOString()
+    });
+  }
+  return rooms.get(roomId);
+}
+
+// Helper function to serialize room (convert Set to Array)
+function serializeRoom(room) {
+  return {
+    id: room.id,
+    name: room.name,
+    type: room.type,
+    hasPassword: !!room.password,
+    userCount: room.users.size,
+    messageCount: room.messages.length,
+    createdAt: room.createdAt
+  };
+}
 
 // REST API Routes
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
     timestamp: new Date().toISOString(),
-    connections: connectedClients.size
+    connections: connectedClients.size,
+    rooms: rooms.size
   });
 });
 
-app.get('/api/messages', (req, res) => {
+// Get all rooms
+app.get('/api/rooms', (req, res) => {
+  const roomList = Array.from(rooms.values()).map(serializeRoom);
+  res.json({ rooms: roomList });
+});
+
+// Get room details
+app.get('/api/rooms/:roomId', (req, res) => {
+  const { roomId } = req.params;
+  const room = rooms.get(roomId);
+  
+  if (!room) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
+  
+  res.json({ room: serializeRoom(room) });
+});
+
+// Create new room
+app.post('/api/rooms', (req, res) => {
+  const { name, type, password } = req.body;
+  
+  if (!name || !type) {
+    return res.status(400).json({ error: 'Name and type are required' });
+  }
+  
+  if (!['public', 'private'].includes(type)) {
+    return res.status(400).json({ error: 'Type must be public or private' });
+  }
+  
+  if (type === 'private' && !password) {
+    return res.status(400).json({ error: 'Password required for private rooms' });
+  }
+  
+  const roomId = uuidv4();
+  const room = getOrCreateRoom(roomId, { name, type, password });
+  
+  // Broadcast new room to all clients
+  broadcast({
+    type: 'room_created',
+    data: serializeRoom(room)
+  });
+  
+  res.status(201).json({ room: serializeRoom(room) });
+});
+
+// Join room (verify password for private rooms)
+app.post('/api/rooms/:roomId/join', (req, res) => {
+  const { roomId } = req.params;
+  const { password } = req.body;
+  
+  const room = rooms.get(roomId);
+  
+  if (!room) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
+  
+  if (room.type === 'private' && room.password !== password) {
+    return res.status(403).json({ error: 'Incorrect password' });
+  }
+  
   res.json({ 
-    messages: messages.slice(-50) // Return last 50 messages
+    success: true,
+    room: serializeRoom(room)
+  });
+});
+
+// Get messages for a room
+app.get('/api/rooms/:roomId/messages', (req, res) => {
+  const { roomId } = req.params;
+  const room = rooms.get(roomId);
+  
+  if (!room) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
+  
+  res.json({ 
+    messages: room.messages.slice(-50) // Return last 50 messages
+  });
+});
+
+// Post message to a room
+app.post('/api/rooms/:roomId/messages', (req, res) => {
+  const { roomId } = req.params;
+  const { username, text } = req.body;
+  
+  if (!username || !text) {
+    return res.status(400).json({ error: 'Username and text are required' });
+  }
+  
+  const room = rooms.get(roomId);
+  
+  if (!room) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
+
+  const message = {
+    id: uuidv4(),
+    roomId,
+    username,
+    text,
+    timestamp: new Date().toISOString()
+  };
+
+  room.messages.push(message);
+  
+  // Broadcast to all clients in this room
+  broadcastToRoom(roomId, {
+    type: 'new_message',
+    data: message
+  });
+
+  res.status(201).json({ message });
+});
+
+// Get stats
+app.get('/api/stats', (req, res) => {
+  res.json({
+    totalRooms: rooms.size,
+    connectedUsers: connectedClients.size,
+    uptime: process.uptime()
+  });
+});
+
+// Legacy endpoint for backward compatibility
+app.get('/api/messages', (req, res) => {
+  const generalRoom = rooms.get('general');
+  res.json({ 
+    messages: generalRoom ? generalRoom.messages.slice(-50) : []
   });
 });
 
@@ -40,17 +207,18 @@ app.post('/api/messages', (req, res) => {
     return res.status(400).json({ error: 'Username and text are required' });
   }
 
+  const generalRoom = getOrCreateRoom('general');
   const message = {
     id: uuidv4(),
+    roomId: 'general',
     username,
     text,
     timestamp: new Date().toISOString()
   };
 
-  messages.push(message);
+  generalRoom.messages.push(message);
   
-  // Broadcast to all WebSocket clients
-  broadcast({
+  broadcastToRoom('general', {
     type: 'new_message',
     data: message
   });
@@ -58,57 +226,113 @@ app.post('/api/messages', (req, res) => {
   res.status(201).json({ message });
 });
 
-app.get('/api/stats', (req, res) => {
-  res.json({
-    totalMessages: messages.length,
-    connectedUsers: connectedClients.size,
-    uptime: process.uptime()
-  });
-});
-
 // WebSocket handling
 wss.on('connection', (ws) => {
   const clientId = uuidv4();
-  connectedClients.set(clientId, ws);
+  const clientData = {
+    ws,
+    username: null,
+    currentRoom: 'general' // Default room
+  };
+  
+  connectedClients.set(clientId, clientData);
   
   console.log(`Client connected: ${clientId} (Total: ${connectedClients.size})`);
 
-  // Send current message history to new client
+  // Send current room list and join general room
+  const generalRoom = getOrCreateRoom('general');
+  generalRoom.users.add(clientId);
+  
   ws.send(JSON.stringify({
     type: 'init',
     data: {
-      messages: messages.slice(-20),
-      clientId
+      clientId,
+      rooms: Array.from(rooms.values()).map(serializeRoom),
+      currentRoom: 'general',
+      messages: generalRoom.messages.slice(-20)
     }
   }));
 
-  // Broadcast user count update
-  broadcastUserCount();
+  // Broadcast updated user count
+  broadcastRoomUpdate('general');
 
   ws.on('message', (data) => {
     try {
       const payload = JSON.parse(data);
+      const client = connectedClients.get(clientId);
       
       switch (payload.type) {
+        case 'set_username':
+          client.username = payload.username;
+          break;
+          
+        case 'join_room':
+          const { roomId, password } = payload;
+          const targetRoom = rooms.get(roomId);
+          
+          if (!targetRoom) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              data: { message: 'Room not found' }
+            }));
+            break;
+          }
+          
+          // Check password for private rooms
+          if (targetRoom.type === 'private' && targetRoom.password !== password) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              data: { message: 'Incorrect password' }
+            }));
+            break;
+          }
+          
+          // Leave current room
+          const currentRoom = rooms.get(client.currentRoom);
+          if (currentRoom) {
+            currentRoom.users.delete(clientId);
+            broadcastRoomUpdate(client.currentRoom);
+          }
+          
+          // Join new room
+          targetRoom.users.add(clientId);
+          client.currentRoom = roomId;
+          
+          ws.send(JSON.stringify({
+            type: 'room_joined',
+            data: {
+              room: serializeRoom(targetRoom),
+              messages: targetRoom.messages.slice(-20)
+            }
+          }));
+          
+          broadcastRoomUpdate(roomId);
+          break;
+          
         case 'message':
+          const room = rooms.get(client.currentRoom);
+          if (!room) break;
+          
           const message = {
             id: uuidv4(),
-            username: payload.username || 'Anonymous',
+            roomId: client.currentRoom,
+            username: payload.username || client.username || 'Anonymous',
             text: payload.text,
             timestamp: new Date().toISOString()
           };
-          messages.push(message);
-          broadcast({
+          
+          room.messages.push(message);
+          broadcastToRoom(client.currentRoom, {
             type: 'new_message',
             data: message
           });
           break;
           
         case 'typing':
-          broadcast({
+          broadcastToRoom(client.currentRoom, {
             type: 'user_typing',
             data: {
-              username: payload.username,
+              username: payload.username || client.username,
               isTyping: payload.isTyping
             }
           }, clientId);
@@ -123,9 +347,18 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    const client = connectedClients.get(clientId);
+    
+    if (client && client.currentRoom) {
+      const room = rooms.get(client.currentRoom);
+      if (room) {
+        room.users.delete(clientId);
+        broadcastRoomUpdate(client.currentRoom);
+      }
+    }
+    
     connectedClients.delete(clientId);
     console.log(`Client disconnected: ${clientId} (Total: ${connectedClients.size})`);
-    broadcastUserCount();
   });
 
   ws.on('error', (error) => {
@@ -138,17 +371,38 @@ function broadcast(message, excludeClientId = null) {
   const messageStr = JSON.stringify(message);
   
   connectedClients.forEach((client, clientId) => {
-    if (clientId !== excludeClientId && client.readyState === 1) { // 1 = OPEN
-      client.send(messageStr);
+    if (clientId !== excludeClientId && client.ws.readyState === 1) {
+      client.ws.send(messageStr);
     }
   });
 }
 
-function broadcastUserCount() {
+function broadcastToRoom(roomId, message, excludeClientId = null) {
+  const messageStr = JSON.stringify(message);
+  
+  connectedClients.forEach((client, clientId) => {
+    if (client.currentRoom === roomId && 
+        clientId !== excludeClientId && 
+        client.ws.readyState === 1) {
+      client.ws.send(messageStr);
+    }
+  });
+}
+
+function broadcastRoomUpdate(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  
+  broadcastToRoom(roomId, {
+    type: 'room_update',
+    data: serializeRoom(room)
+  });
+  
+  // Also broadcast room list update to all clients
   broadcast({
-    type: 'user_count',
+    type: 'rooms_updated',
     data: {
-      count: connectedClients.size
+      rooms: Array.from(rooms.values()).map(serializeRoom)
     }
   });
 }
@@ -158,6 +412,7 @@ server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📡 WebSocket server ready`);
   console.log(`🏥 Health check: http://localhost:${PORT}/health`);
+  console.log(`🏠 Default room: general`);
 });
 
 // Graceful shutdown

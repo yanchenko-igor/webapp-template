@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 
 // Use relative URLs when behind nginx proxy
-// In production, nginx routes /api to backend and upgrades WebSocket connections
 const API_URL = process.env.REACT_APP_API_URL || '/api';
 const WS_URL = process.env.REACT_APP_WS_URL || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
 
@@ -12,19 +11,33 @@ function App() {
   const [isUsernameSet, setIsUsernameSet] = useState(false);
   const [messageText, setMessageText] = useState('');
   const [isConnected, setIsConnected] = useState(false);
-  const [userCount, setUserCount] = useState(0);
   const [typingUsers, setTypingUsers] = useState(new Set());
+  
+  // Room state
+  const [rooms, setRooms] = useState([]);
+  const [currentRoom, setCurrentRoom] = useState(null);
+  const [showCreateRoom, setShowCreateRoom] = useState(false);
+  const [showJoinRoom, setShowJoinRoom] = useState(false);
+  const [selectedRoom, setSelectedRoom] = useState(null);
+  
+  // Room creation form
+  const [newRoomName, setNewRoomName] = useState('');
+  const [newRoomType, setNewRoomType] = useState('public');
+  const [newRoomPassword, setNewRoomPassword] = useState('');
+  
+  // Room joining
+  const [joinPassword, setJoinPassword] = useState('');
   
   const wsRef = useRef(null);
   const messagesEndRef = useRef(null);
   const typingTimeoutRef = useRef(null);
 
   useEffect(() => {
-    // Fetch initial messages
-    fetch(`${API_URL}/api/messages`)
+    // Fetch rooms list
+    fetch(`${API_URL}/rooms`)
       .then(res => res.json())
-      .then(data => setMessages(data.messages))
-      .catch(err => console.error('Failed to fetch messages:', err));
+      .then(data => setRooms(data.rooms))
+      .catch(err => console.error('Failed to fetch rooms:', err));
 
     // Setup WebSocket connection
     const ws = new WebSocket(WS_URL);
@@ -40,6 +53,8 @@ function App() {
       
       switch (data.type) {
         case 'init':
+          setRooms(data.data.rooms);
+          setCurrentRoom({ id: 'general', name: 'General' });
           setMessages(data.data.messages);
           break;
           
@@ -47,8 +62,28 @@ function App() {
           setMessages(prev => [...prev, data.data]);
           break;
           
-        case 'user_count':
-          setUserCount(data.data.count);
+        case 'room_joined':
+          setCurrentRoom(data.data.room);
+          setMessages(data.data.messages);
+          setShowJoinRoom(false);
+          setJoinPassword('');
+          break;
+          
+        case 'room_created':
+          setRooms(prev => [...prev, data.data]);
+          break;
+          
+        case 'rooms_updated':
+          setRooms(data.data.rooms);
+          break;
+          
+        case 'room_update':
+          setRooms(prev => prev.map(r => 
+            r.id === data.data.id ? data.data : r
+          ));
+          if (currentRoom && currentRoom.id === data.data.id) {
+            setCurrentRoom(data.data);
+          }
           break;
           
         case 'user_typing':
@@ -61,6 +96,10 @@ function App() {
               return next;
             });
           }
+          break;
+          
+        case 'error':
+          alert(data.data.message);
           break;
           
         default:
@@ -88,8 +127,68 @@ function App() {
 
   const handleSetUsername = (e) => {
     e.preventDefault();
-    if (username.trim()) {
+    if (username.trim() && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'set_username',
+        username: username.trim()
+      }));
       setIsUsernameSet(true);
+    }
+  };
+
+  const handleCreateRoom = async (e) => {
+    e.preventDefault();
+    
+    try {
+      const response = await fetch(`${API_URL}/rooms`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newRoomName,
+          type: newRoomType,
+          password: newRoomType === 'private' ? newRoomPassword : null
+        })
+      });
+      
+      if (response.ok) {
+        const { room } = await response.json();
+        setShowCreateRoom(false);
+        setNewRoomName('');
+        setNewRoomPassword('');
+        setNewRoomType('public');
+        
+        // Join the newly created room
+        handleJoinRoom(room.id, newRoomType === 'private' ? newRoomPassword : null);
+      }
+    } catch (err) {
+      console.error('Failed to create room:', err);
+      alert('Failed to create room');
+    }
+  };
+
+  const handleJoinRoom = (roomId, password = null) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'join_room',
+        roomId,
+        password
+      }));
+    }
+  };
+
+  const handleJoinRoomClick = (room) => {
+    if (room.hasPassword) {
+      setSelectedRoom(room);
+      setShowJoinRoom(true);
+    } else {
+      handleJoinRoom(room.id);
+    }
+  };
+
+  const handleJoinWithPassword = (e) => {
+    e.preventDefault();
+    if (selectedRoom) {
+      handleJoinRoom(selectedRoom.id, joinPassword);
     }
   };
 
@@ -121,7 +220,6 @@ function App() {
   const handleMessageChange = (e) => {
     setMessageText(e.target.value);
     
-    // Typing indicator
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
     } else {
@@ -166,49 +264,185 @@ function App() {
   return (
     <div className="App">
       <header className="App-header">
-        <h1>💬 Chat Room</h1>
-        <div className="status">
-          <span className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
-            {isConnected ? '🟢' : '🔴'} {isConnected ? 'Connected' : 'Disconnected'}
+        <div className="header-top">
+          <h1>💬 Chat Rooms</h1>
+          <div className="status">
+            <span className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
+              {isConnected ? '🟢' : '🔴'} {isConnected ? 'Connected' : 'Disconnected'}
+            </span>
+          </div>
+        </div>
+        <div className="current-room-info">
+          <span className="room-name">
+            {currentRoom ? (
+              <>
+                {currentRoom.hasPassword && '🔒'} {currentRoom.name}
+                {currentRoom.userCount > 0 && ` (${currentRoom.userCount} online)`}
+              </>
+            ) : 'No room selected'}
           </span>
-          <span className="user-count">👥 {userCount} online</span>
         </div>
       </header>
 
-      <div className="messages-container">
-        {messages.map((msg) => (
-          <div 
-            key={msg.id} 
-            className={`message ${msg.username === username ? 'own-message' : ''}`}
-          >
-            <div className="message-header">
-              <span className="username">{msg.username}</span>
-              <span className="timestamp">{formatTimestamp(msg.timestamp)}</span>
-            </div>
-            <div className="message-text">{msg.text}</div>
+      <div className="main-container">
+        <aside className="rooms-sidebar">
+          <div className="rooms-header">
+            <h2>Rooms</h2>
+            <button 
+              className="create-room-btn"
+              onClick={() => setShowCreateRoom(true)}
+              title="Create new room"
+            >
+              +
+            </button>
           </div>
-        ))}
-        <div ref={messagesEndRef} />
-        
-        {typingUsers.size > 0 && (
-          <div className="typing-indicator">
-            {Array.from(typingUsers).join(', ')} {typingUsers.size === 1 ? 'is' : 'are'} typing...
+          
+          <div className="rooms-list">
+            {rooms.map(room => (
+              <div 
+                key={room.id}
+                className={`room-item ${currentRoom && currentRoom.id === room.id ? 'active' : ''}`}
+                onClick={() => handleJoinRoomClick(room)}
+              >
+                <div className="room-item-header">
+                  <span className="room-item-name">
+                    {room.hasPassword && '🔒'} {room.name}
+                  </span>
+                  <span className="room-type-badge">{room.type}</span>
+                </div>
+                <div className="room-item-info">
+                  <span>👥 {room.userCount}</span>
+                  <span>💬 {room.messageCount}</span>
+                </div>
+              </div>
+            ))}
           </div>
-        )}
+        </aside>
+
+        <main className="chat-container">
+          <div className="messages-container">
+            {messages.map((msg) => (
+              <div 
+                key={msg.id} 
+                className={`message ${msg.username === username ? 'own-message' : ''}`}
+              >
+                <div className="message-header">
+                  <span className="username">{msg.username}</span>
+                  <span className="timestamp">{formatTimestamp(msg.timestamp)}</span>
+                </div>
+                <div className="message-text">{msg.text}</div>
+              </div>
+            ))}
+            <div ref={messagesEndRef} />
+            
+            {typingUsers.size > 0 && (
+              <div className="typing-indicator">
+                {Array.from(typingUsers).join(', ')} {typingUsers.size === 1 ? 'is' : 'are'} typing...
+              </div>
+            )}
+          </div>
+
+          <form className="message-form" onSubmit={handleSendMessage}>
+            <input
+              type="text"
+              placeholder="Type a message..."
+              value={messageText}
+              onChange={handleMessageChange}
+              disabled={!isConnected || !currentRoom}
+            />
+            <button type="submit" disabled={!isConnected || !messageText.trim() || !currentRoom}>
+              Send
+            </button>
+          </form>
+        </main>
       </div>
 
-      <form className="message-form" onSubmit={handleSendMessage}>
-        <input
-          type="text"
-          placeholder="Type a message..."
-          value={messageText}
-          onChange={handleMessageChange}
-          disabled={!isConnected}
-        />
-        <button type="submit" disabled={!isConnected || !messageText.trim()}>
-          Send
-        </button>
-      </form>
+      {/* Create Room Modal */}
+      {showCreateRoom && (
+        <div className="modal-overlay" onClick={() => setShowCreateRoom(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>Create New Room</h2>
+            <form onSubmit={handleCreateRoom}>
+              <input
+                type="text"
+                placeholder="Room name"
+                value={newRoomName}
+                onChange={(e) => setNewRoomName(e.target.value)}
+                required
+                autoFocus
+              />
+              
+              <div className="radio-group">
+                <label>
+                  <input
+                    type="radio"
+                    value="public"
+                    checked={newRoomType === 'public'}
+                    onChange={(e) => setNewRoomType(e.target.value)}
+                  />
+                  Public
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    value="private"
+                    checked={newRoomType === 'private'}
+                    onChange={(e) => setNewRoomType(e.target.value)}
+                  />
+                  Private
+                </label>
+              </div>
+              
+              {newRoomType === 'private' && (
+                <input
+                  type="password"
+                  placeholder="Room password"
+                  value={newRoomPassword}
+                  onChange={(e) => setNewRoomPassword(e.target.value)}
+                  required
+                />
+              )}
+              
+              <div className="modal-actions">
+                <button type="button" onClick={() => setShowCreateRoom(false)}>
+                  Cancel
+                </button>
+                <button type="submit">Create</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Join Private Room Modal */}
+      {showJoinRoom && selectedRoom && (
+        <div className="modal-overlay" onClick={() => setShowJoinRoom(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>Join {selectedRoom.name}</h2>
+            <p>This room is private. Enter the password to join.</p>
+            <form onSubmit={handleJoinWithPassword}>
+              <input
+                type="password"
+                placeholder="Enter password"
+                value={joinPassword}
+                onChange={(e) => setJoinPassword(e.target.value)}
+                required
+                autoFocus
+              />
+              
+              <div className="modal-actions">
+                <button type="button" onClick={() => {
+                  setShowJoinRoom(false);
+                  setJoinPassword('');
+                }}>
+                  Cancel
+                </button>
+                <button type="submit">Join</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
